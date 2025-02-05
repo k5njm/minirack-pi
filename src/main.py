@@ -172,20 +172,40 @@ async def handle_device_events(device):
             if event.code == evdev.ecodes.KEY_ENTER:
                 button_pressed = bool(event.value)
 
+async def cleanup():
+    """Clean up resources before shutdown."""
+    # Clear the display
+    draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)
+    oled.image(image)
+    oled.show()
+    
+    # Close input devices
+    rotary_device.close()
+    button_device.close()
+    
+    # Reset OLED
+    oled_reset.off()
+
 if __name__ == "__main__":
     # Set up event loop
     loop = asyncio.get_event_loop()
     
-    # Schedule the display updates
-    asyncio.ensure_future(update_display())
-    
-    # Schedule input device handlers
-    for device in [rotary_device, button_device]:
-        asyncio.ensure_future(handle_device_events(device))
+    # Create tasks
+    tasks = [
+        asyncio.ensure_future(update_display()),
+        asyncio.ensure_future(handle_device_events(rotary_device)),
+        asyncio.ensure_future(handle_device_events(button_device))
+    ]
     
     try:
         loop.run_forever()
     except KeyboardInterrupt:
-        pass
+        print("\nShutting down gracefully...")
+        # Cancel all tasks
+        for task in tasks:
+            task.cancel()
+        # Run cleanup
+        loop.run_until_complete(cleanup())
     finally:
+        loop.stop()
         loop.close()
