@@ -6,32 +6,32 @@ import board
 import busio
 import gpiozero
 import subprocess
-import threading
-import queue
+import asyncio
 from PIL import Image, ImageDraw, ImageFont
 import adafruit_ssd1306
 import evdev
 
-# Rotary encoder setup
-def find_rotary_device():
-    """Find the first rotary encoder device that matches the pattern in /dev/input/by-path/."""
+def find_input_device(pattern):
+    """Find the first input device that matches the pattern in /dev/input/by-path/."""
     by_path_dir = "/dev/input/by-path"
     try:
         for device_path in os.listdir(by_path_dir):
-            if "platform-rotary" in device_path:
+            if pattern in device_path:
                 full_path = os.path.join(by_path_dir, device_path)
                 real_path = os.path.realpath(full_path)
                 return evdev.InputDevice(real_path)
-        raise FileNotFoundError("No rotary encoder device found")
+        raise FileNotFoundError(f"No device found matching pattern: {pattern}")
     except (PermissionError, OSError) as e:
-        raise RuntimeError(f"Error accessing rotary device: {e}")
+        raise RuntimeError(f"Error accessing device: {e}")
 
-d = find_rotary_device()
+# Input device setup
+rotary_device = find_input_device("platform-rotary")
+button_device = find_input_device("platform-button")
 
 PAGE_COUNT = 5
 page = 1
+button_pressed = False
 prev_page = None  # Track the last displayed page
-page_queue = queue.Queue()
 
 # Define the Reset Pin using gpiozero
 oled_reset = gpiozero.OutputDevice(4, active_high=False)  # GPIO 4 (D4) used for reset
@@ -96,32 +96,34 @@ def get_system_stats():
         "temp": run_command("vcgencmd measure_temp | cut -d '=' -f 2", default="N/A")
     }
 
-def rotary_encoder_listener():
-    """ Threaded function to listen for rotary encoder events and update the page number. """
-    global page
-    for e in d.read_loop():
-        if e.type == evdev.ecodes.EV_REL:
-            new_page = (page + e.value - 1) % PAGE_COUNT + 1
-            page_queue.put(new_page)  # Queue page updates
+async def handle_input_events():
+    """Handle input events from both rotary encoder and button."""
+    global page, button_pressed
+    async def handle_device(device):
+        async for event in device.async_read_loop():
+            if device == rotary_device and event.type == evdev.ecodes.EV_REL:
+                global page
+                page = (page + event.value - 1) % PAGE_COUNT + 1
+            elif device == button_device and event.type == evdev.ecodes.EV_KEY:
+                if event.code == evdev.ecodes.KEY_ENTER:
+                    button_pressed = bool(event.value)
 
-# Start rotary encoder thread
-threading.Thread(target=rotary_encoder_listener, daemon=True).start()
+    await asyncio.gather(
+        handle_device(rotary_device),
+        handle_device(button_device)
+    )
 
-toggle = False
-last_update_time = time.time()  # Track last OLED update
+async def update_display():
+    """Update the OLED display periodically."""
+    global prev_page
+    toggle = False
+    last_update_time = time.time()
 
-while True:
-    now = time.time()
-    redraw_required = False  # Flag to avoid unnecessary OLED updates
+    while True:
+        now = time.time()
+        redraw_required = page != prev_page
 
-    # Check for page changes
-    while not page_queue.empty():
-        page = page_queue.get()
-        if page != prev_page:
-            redraw_required = True  # Force redraw if page changed
-
-    # Update display every 1 second OR if the page changed
-    if redraw_required or (now - last_update_time >= 1):
+        if redraw_required or (now - last_update_time >= 1):
         draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)  # Clear display
 
         stats = get_system_stats()
@@ -141,17 +143,30 @@ while True:
         display_text = stats["ip"] if toggle else stats["ssid"]
         draw.text((24, LINE_HEIGHT * 2 + 2), display_text, font=font, fill=255)
 
-        # Line 4: Page number
-        draw.text((120, 2), str(page), font=font, fill=255)
+        # Line 4: Page number with button indicator
+        page_text = f"{'*' if button_pressed else ' '}{page}"
+        draw.text((112, 2), page_text, font=font, fill=255)
 
         # Send updated image to OLED
         oled.image(image)
         oled.show()
 
-        # Track last update time
-        last_update_time = now
-        prev_page = page  # Store the last displayed page
+            # Track last update time
+            last_update_time = now
+            prev_page = page  # Store the last displayed page
 
-    # Toggle WiFi/IP every 5 seconds
-    if int(now) % TOGGLE_INTERVAL == 0:
-        toggle = not toggle
+        # Toggle WiFi/IP every 5 seconds
+        if int(now) % TOGGLE_INTERVAL == 0:
+            toggle = not toggle
+            
+        await asyncio.sleep(0.1)
+
+async def main():
+    """Main async function to run everything."""
+    await asyncio.gather(
+        update_display(),
+        handle_input_events()
+    )
+
+if __name__ == "__main__":
+    asyncio.run(main())
