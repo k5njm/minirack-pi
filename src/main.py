@@ -161,12 +161,31 @@ async def update_display():
             
         await asyncio.sleep(0.1)
 
-async def main():
-    """Main async function to run everything."""
-    await asyncio.gather(
-        update_display(),
-        handle_input_events()
-    )
+async def handle_device_events(device):
+    """Handle events from a single input device."""
+    global page, button_pressed
+    async for event in device.async_read_loop():
+        if device == rotary_device and event.type == evdev.ecodes.EV_REL:
+            global page
+            page = (page + event.value - 1) % PAGE_COUNT + 1
+        elif device == button_device and event.type == evdev.ecodes.EV_KEY:
+            if event.code == evdev.ecodes.KEY_ENTER:
+                button_pressed = bool(event.value)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Set up event loop
+    loop = asyncio.get_event_loop()
+    
+    # Schedule the display updates
+    asyncio.ensure_future(update_display())
+    
+    # Schedule input device handlers
+    for device in [rotary_device, button_device]:
+        asyncio.ensure_future(handle_device_events(device))
+    
+    try:
+        loop.run_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        loop.close()
