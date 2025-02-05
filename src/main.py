@@ -7,6 +7,7 @@ import busio
 import gpiozero
 import subprocess
 import asyncio
+from asyncio import Queue
 from PIL import Image, ImageDraw, ImageFont
 import adafruit_ssd1306
 import evdev
@@ -32,6 +33,7 @@ PAGE_COUNT = 5
 page = 1
 button_pressed = False
 prev_page = None  # Track the last displayed page
+display_queue = asyncio.Queue()  # Queue for display updates
 
 # Define the Reset Pin using gpiozero
 oled_reset = gpiozero.OutputDevice(4, active_high=False)  # GPIO 4 (D4) used for reset
@@ -97,52 +99,56 @@ def get_system_stats():
     }
 
 async def update_display():
-    """Update the OLED display periodically."""
+    """Update the OLED display based on events and periodic updates."""
     global prev_page
     toggle = False
     last_update_time = time.time()
 
+    async def redraw_screen():
+        """Redraw the entire screen contents."""
+        draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)  # Clear display
+        stats = get_system_stats()
+
+        # Line 1: CPU Icon & Hostname (Full Width)
+        draw.text((2, 0), ICON_CPU, font=icon_font, fill=255)
+        draw.text((24, 2), stats["hostname"], font=font, fill=255)
+
+        # Line 2: Disk Icon + Usage (Col 1), Temp Icon + Temp (Col 2)
+        draw.text((2, LINE_HEIGHT), ICON_DISK, font=icon_font, fill=255)
+        draw.text((24, LINE_HEIGHT + 2), stats["disk"], font=font, fill=255)
+        draw.text((COLUMN_WIDTH + 2, LINE_HEIGHT), ICON_TEMP, font=icon_font, fill=255)
+        draw.text((COLUMN_WIDTH + 24, LINE_HEIGHT + 2), stats["temp"], font=font, fill=255)
+
+        # Line 3: WiFi Icon + IP or SSID (Toggles every 5 sec)
+        draw.text((2, LINE_HEIGHT * 2), ICON_WIFI, font=icon_font, fill=255)
+        display_text = stats["ip"] if toggle else stats["ssid"]
+        draw.text((24, LINE_HEIGHT * 2 + 2), display_text, font=font, fill=255)
+
+        # Line 4: Page number with button indicator
+        page_text = f"{'*' if button_pressed else ' '}{page}"
+        draw.text((112, 2), page_text, font=font, fill=255)
+
+        # Send updated image to OLED
+        oled.image(image)
+        oled.show()
+
     while True:
-        now = time.time()
-        redraw_required = page != prev_page
-
-        if redraw_required or (now - last_update_time >= 1):
-            draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)  # Clear display
-
-            stats = get_system_stats()
-
-            # Line 1: CPU Icon & Hostname (Full Width)
-            draw.text((2, 0), ICON_CPU, font=icon_font, fill=255)
-            draw.text((24, 2), stats["hostname"], font=font, fill=255)
-
-            # Line 2: Disk Icon + Usage (Col 1), Temp Icon + Temp (Col 2)
-            draw.text((2, LINE_HEIGHT), ICON_DISK, font=icon_font, fill=255)
-            draw.text((24, LINE_HEIGHT + 2), stats["disk"], font=font, fill=255)
-            draw.text((COLUMN_WIDTH + 2, LINE_HEIGHT), ICON_TEMP, font=icon_font, fill=255)
-            draw.text((COLUMN_WIDTH + 24, LINE_HEIGHT + 2), stats["temp"], font=font, fill=255)
-
-            # Line 3: WiFi Icon + IP or SSID (Toggles every 5 sec)
-            draw.text((2, LINE_HEIGHT * 2), ICON_WIFI, font=icon_font, fill=255)
-            display_text = stats["ip"] if toggle else stats["ssid"]
-            draw.text((24, LINE_HEIGHT * 2 + 2), display_text, font=font, fill=255)
-
-            # Line 4: Page number with button indicator
-            page_text = f"{'*' if button_pressed else ' '}{page}"
-            draw.text((112, 2), page_text, font=font, fill=255)
-
-            # Send updated image to OLED
-            oled.image(image)
-            oled.show()
-
-            # Track last update time
-            last_update_time = now
-            prev_page = page  # Store the last displayed page
-
-        # Toggle WiFi/IP every 5 seconds
-        if int(now) % TOGGLE_INTERVAL == 0:
-            toggle = not toggle
-            
-        await asyncio.sleep(0.1)
+        try:
+            # Wait for an update event or timeout after 1 second
+            update_type = await asyncio.wait_for(display_queue.get(), timeout=1.0)
+            await redraw_screen()
+            prev_page = page
+            last_update_time = time.time()
+        except asyncio.TimeoutError:
+            now = time.time()
+            # Periodic updates
+            if now - last_update_time >= 1:
+                await redraw_screen()
+                last_update_time = now
+            # Toggle WiFi/IP display
+            if int(now) % TOGGLE_INTERVAL == 0:
+                toggle = not toggle
+                await redraw_screen()
 
 async def handle_device_events(device):
     """Handle events from a single input device."""
@@ -151,10 +157,12 @@ async def handle_device_events(device):
         if device == rotary_device and event.type == evdev.ecodes.EV_REL:
             page = (page + event.value - 1) % PAGE_COUNT + 1
             print(f"Rotary event: new page = {page}")
+            await display_queue.put("page_change")
         elif device == button_device and event.type == evdev.ecodes.EV_KEY:
             if event.code == evdev.ecodes.KEY_A:  # Button uses KEY_A
                 button_pressed = bool(event.value)
                 print(f"Button event: pressed = {button_pressed}")
+                await display_queue.put("button_event")
 
 async def cleanup():
     """Clean up resources before shutdown."""
