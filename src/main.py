@@ -63,8 +63,8 @@ draw = ImageDraw.Draw(image)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Load fonts using absolute paths
-font_path = os.path.join(SCRIPT_DIR, 'PixelOperator.ttf')
-icon_font_path = os.path.join(SCRIPT_DIR, 'lineawesome-webfont.ttf')
+font_path = os.path.join(os.path.dirname(SCRIPT_DIR), 'fonts', 'PixelOperator.ttf')
+icon_font_path = os.path.join(os.path.dirname(SCRIPT_DIR), 'fonts', 'lineawesome-webfont.ttf')
 
 # Load fonts
 font = ImageFont.truetype(font_path, 16)
