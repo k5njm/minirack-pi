@@ -96,23 +96,6 @@ def get_system_stats():
         "temp": run_command("vcgencmd measure_temp | cut -d '=' -f 2", default="N/A")
     }
 
-async def handle_input_events():
-    """Handle input events from both rotary encoder and button."""
-    global page, button_pressed
-    async def handle_device(device):
-        async for event in device.async_read_loop():
-            if device == rotary_device and event.type == evdev.ecodes.EV_REL:
-                global page
-                page = (page + event.value - 1) % PAGE_COUNT + 1
-            elif device == button_device and event.type == evdev.ecodes.EV_KEY:
-                if event.code == evdev.ecodes.KEY_ENTER:
-                    button_pressed = bool(event.value)
-
-    await asyncio.gather(
-        handle_device(rotary_device),
-        handle_device(button_device)
-    )
-
 async def update_display():
     """Update the OLED display periodically."""
     global prev_page
@@ -166,11 +149,12 @@ async def handle_device_events(device):
     global page, button_pressed
     async for event in device.async_read_loop():
         if device == rotary_device and event.type == evdev.ecodes.EV_REL:
-            global page
             page = (page + event.value - 1) % PAGE_COUNT + 1
+            print(f"Rotary event: new page = {page}")
         elif device == button_device and event.type == evdev.ecodes.EV_KEY:
             if event.code == evdev.ecodes.KEY_ENTER:
                 button_pressed = bool(event.value)
+                print(f"Button event: pressed = {button_pressed}")
 
 async def cleanup():
     """Clean up resources before shutdown."""
