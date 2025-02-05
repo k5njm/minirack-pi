@@ -148,4 +148,4 @@ while True:
 
     # Toggle WiFi/IP every 5 seconds
     if int(now) % TOGGLE_INTERVAL == 0:
-        toggle = not toggle````
+        toggle = not toggle
