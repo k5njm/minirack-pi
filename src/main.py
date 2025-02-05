@@ -152,7 +152,7 @@ async def handle_device_events(device):
             page = (page + event.value - 1) % PAGE_COUNT + 1
             print(f"Rotary event: new page = {page}")
         elif device == button_device and event.type == evdev.ecodes.EV_KEY:
-            if event.code == evdev.ecodes.KEY_ENTER:
+            if event.code == evdev.ecodes.KEY_A:  # Button uses KEY_A
                 button_pressed = bool(event.value)
                 print(f"Button event: pressed = {button_pressed}")
 
