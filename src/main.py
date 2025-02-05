@@ -14,10 +14,12 @@ import evdev
 
 # Rotary encoder setup
 def find_rotary_device():
-    """Find the first rotary encoder device that matches the pattern."""
-    for device in [evdev.InputDevice(path) for path in evdev.list_devices()]:
-        if "platform-rotary" in device.path:
-            return device
+    """Find the first rotary encoder device that matches the pattern in /dev/input/by-path/."""
+    by_path_dir = "/dev/input/by-path"
+    for device_path in os.listdir(by_path_dir):
+        if "platform-rotary" in device_path:
+            full_path = os.path.join(by_path_dir, device_path)
+            return evdev.InputDevice(full_path)
     raise FileNotFoundError("No rotary encoder device found")
 
 d = find_rotary_device()
