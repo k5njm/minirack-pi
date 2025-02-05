@@ -13,8 +13,14 @@ import adafruit_ssd1306
 import evdev
 
 # Rotary encoder setup
-rotary_knob = "/dev/input/by-path/platform-rotary@11-event"
-d = evdev.InputDevice(rotary_knob)
+def find_rotary_device():
+    """Find the first rotary encoder device that matches the pattern."""
+    for device in [evdev.InputDevice(path) for path in evdev.list_devices()]:
+        if "platform-rotary" in device.path:
+            return device
+    raise FileNotFoundError("No rotary encoder device found")
+
+d = find_rotary_device()
 
 PAGE_COUNT = 5
 page = 1
@@ -68,7 +74,6 @@ ICON_WIFI = chr(61931)
 LINE_HEIGHT = 20
 COLUMN_WIDTH = WIDTH // 2
 
-
 def get_system_stats():
     def run_command(cmd, default="Unknown"):
         try:
@@ -85,7 +90,6 @@ def get_system_stats():
         "temp": run_command("vcgencmd measure_temp | cut -d '=' -f 2", default="N/A")
     }
 
-
 def rotary_encoder_listener():
     """ Threaded function to listen for rotary encoder events and update the page number. """
     global page
@@ -93,7 +97,6 @@ def rotary_encoder_listener():
         if e.type == evdev.ecodes.EV_REL:
             new_page = (page + e.value - 1) % PAGE_COUNT + 1
             page_queue.put(new_page)  # Queue page updates
-
 
 # Start rotary encoder thread
 threading.Thread(target=rotary_encoder_listener, daemon=True).start()
@@ -145,4 +148,4 @@ while True:
 
     # Toggle WiFi/IP every 5 seconds
     if int(now) % TOGGLE_INTERVAL == 0:
-        toggle = not toggle
+        toggle = not toggle````
