@@ -98,57 +98,81 @@ def get_system_stats():
         "temp": run_command("vcgencmd measure_temp | cut -d '=' -f 2", default="N/A")
     }
 
-async def update_display():
-    """Update the OLED display based on events and periodic updates."""
-    global prev_page
-    toggle = False
-    last_update_time = time.time()
-
-    async def redraw_screen():
-        """Redraw the entire screen contents."""
-        draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)  # Clear display
-        stats = get_system_stats()
-
-        # Line 1: CPU Icon & Hostname (Full Width)
-        draw.text((2, 0), ICON_CPU, font=icon_font, fill=255)
-        draw.text((24, 2), stats["hostname"], font=font, fill=255)
-
-        # Line 2: Disk Icon + Usage (Col 1), Temp Icon + Temp (Col 2)
-        draw.text((2, LINE_HEIGHT), ICON_DISK, font=icon_font, fill=255)
-        draw.text((24, LINE_HEIGHT + 2), stats["disk"], font=font, fill=255)
-        draw.text((COLUMN_WIDTH + 2, LINE_HEIGHT), ICON_TEMP, font=icon_font, fill=255)
-        draw.text((COLUMN_WIDTH + 24, LINE_HEIGHT + 2), stats["temp"], font=font, fill=255)
-
-        # Line 3: WiFi Icon + IP or SSID (Toggles every 5 sec)
-        draw.text((2, LINE_HEIGHT * 2), ICON_WIFI, font=icon_font, fill=255)
-        display_text = stats["ip"] if toggle else stats["ssid"]
-        draw.text((24, LINE_HEIGHT * 2 + 2), display_text, font=font, fill=255)
-
-        # Line 4: Page number with button indicator
+class DisplayManager:
+    def __init__(self):
+        self.stats = get_system_stats()
+        self.toggle = False
+        self.last_stats_update = 0
+        self.stats_update_interval = 1.0  # Update stats every second
+        self.toggle_interval = TOGGLE_INTERVAL
+        
+    async def update_stats(self):
+        """Periodically update system stats"""
+        while True:
+            self.stats = get_system_stats()
+            await asyncio.sleep(self.stats_update_interval)
+            
+    async def toggle_wifi_display(self):
+        """Toggle between IP and SSID display"""
+        while True:
+            await asyncio.sleep(self.toggle_interval)
+            self.toggle = not self.toggle
+            await self.update_ui()
+            
+    def draw_page_indicator(self):
+        """Draw just the page indicator"""
+        # Clear just the page indicator area
+        draw.rectangle((110, 0, WIDTH, 16), outline=0, fill=0)
         page_text = f"{'*' if button_pressed else ' '}{page}"
         draw.text((112, 2), page_text, font=font, fill=255)
-
-        # Send updated image to OLED
+        
+    def draw_system_info(self):
+        """Draw the system information"""
+        draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)
+        
+        # Line 1: CPU Icon & Hostname
+        draw.text((2, 0), ICON_CPU, font=icon_font, fill=255)
+        draw.text((24, 2), self.stats["hostname"], font=font, fill=255)
+        
+        # Line 2: Disk & Temp
+        draw.text((2, LINE_HEIGHT), ICON_DISK, font=icon_font, fill=255)
+        draw.text((24, LINE_HEIGHT + 2), self.stats["disk"], font=font, fill=255)
+        draw.text((COLUMN_WIDTH + 2, LINE_HEIGHT), ICON_TEMP, font=icon_font, fill=255)
+        draw.text((COLUMN_WIDTH + 24, LINE_HEIGHT + 2), self.stats["temp"], font=font, fill=255)
+        
+        # Line 3: WiFi
+        draw.text((2, LINE_HEIGHT * 2), ICON_WIFI, font=icon_font, fill=255)
+        display_text = self.stats["ip"] if self.toggle else self.stats["ssid"]
+        draw.text((24, LINE_HEIGHT * 2 + 2), display_text, font=font, fill=255)
+        
+        self.draw_page_indicator()
+        
+    async def update_ui(self):
+        """Update the display"""
         oled.image(image)
         oled.show()
 
+async def handle_ui_updates():
+    """Manage all UI updates"""
+    display_mgr = DisplayManager()
+    
+    # Start background tasks
+    asyncio.create_task(display_mgr.update_stats())
+    asyncio.create_task(display_mgr.toggle_wifi_display())
+    
+    # Initial draw
+    display_mgr.draw_system_info()
+    await display_mgr.update_ui()
+    
     while True:
-        try:
-            # Wait for an update event or timeout after 1 second
-            update_type = await asyncio.wait_for(display_queue.get(), timeout=1.0)
-            await redraw_screen()
-            prev_page = page
-            last_update_time = time.time()
-        except asyncio.TimeoutError:
-            now = time.time()
-            # Periodic updates
-            if now - last_update_time >= 1:
-                await redraw_screen()
-                last_update_time = now
-            # Toggle WiFi/IP display
-            if int(now) % TOGGLE_INTERVAL == 0:
-                toggle = not toggle
-                await redraw_screen()
+        update_type = await display_queue.get()
+        if update_type == "page_change" or update_type == "button_event":
+            # Quick update for UI interactions
+            display_mgr.draw_page_indicator()
+        elif update_type == "full_refresh":
+            # Full refresh for system stats
+            display_mgr.draw_system_info()
+        await display_mgr.update_ui()
 
 async def handle_device_events(device):
     """Handle events from a single input device."""
@@ -157,9 +181,10 @@ async def handle_device_events(device):
         if device == rotary_device and event.type == evdev.ecodes.EV_REL:
             page = (page + event.value - 1) % PAGE_COUNT + 1
             print(f"Rotary event: new page = {page}")
+            # Immediate UI update for input events
             await display_queue.put("page_change")
         elif device == button_device and event.type == evdev.ecodes.EV_KEY:
-            if event.code == evdev.ecodes.KEY_A:  # Button uses KEY_A
+            if event.code == evdev.ecodes.KEY_A:
                 button_pressed = bool(event.value)
                 print(f"Button event: pressed = {button_pressed}")
                 await display_queue.put("button_event")
@@ -184,7 +209,7 @@ if __name__ == "__main__":
     
     # Create tasks
     tasks = [
-        asyncio.ensure_future(update_display()),
+        asyncio.ensure_future(handle_ui_updates()),
         asyncio.ensure_future(handle_device_events(rotary_device)),
         asyncio.ensure_future(handle_device_events(button_device))
     ]
