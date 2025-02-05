@@ -124,32 +124,32 @@ async def update_display():
         redraw_required = page != prev_page
 
         if redraw_required or (now - last_update_time >= 1):
-        draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)  # Clear display
+            draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)  # Clear display
 
-        stats = get_system_stats()
+            stats = get_system_stats()
 
-        # Line 1: CPU Icon & Hostname (Full Width)
-        draw.text((2, 0), ICON_CPU, font=icon_font, fill=255)
-        draw.text((24, 2), stats["hostname"], font=font, fill=255)
+            # Line 1: CPU Icon & Hostname (Full Width)
+            draw.text((2, 0), ICON_CPU, font=icon_font, fill=255)
+            draw.text((24, 2), stats["hostname"], font=font, fill=255)
 
-        # Line 2: Disk Icon + Usage (Col 1), Temp Icon + Temp (Col 2)
-        draw.text((2, LINE_HEIGHT), ICON_DISK, font=icon_font, fill=255)
-        draw.text((24, LINE_HEIGHT + 2), stats["disk"], font=font, fill=255)
-        draw.text((COLUMN_WIDTH + 2, LINE_HEIGHT), ICON_TEMP, font=icon_font, fill=255)
-        draw.text((COLUMN_WIDTH + 24, LINE_HEIGHT + 2), stats["temp"], font=font, fill=255)
+            # Line 2: Disk Icon + Usage (Col 1), Temp Icon + Temp (Col 2)
+            draw.text((2, LINE_HEIGHT), ICON_DISK, font=icon_font, fill=255)
+            draw.text((24, LINE_HEIGHT + 2), stats["disk"], font=font, fill=255)
+            draw.text((COLUMN_WIDTH + 2, LINE_HEIGHT), ICON_TEMP, font=icon_font, fill=255)
+            draw.text((COLUMN_WIDTH + 24, LINE_HEIGHT + 2), stats["temp"], font=font, fill=255)
 
-        # Line 3: WiFi Icon + IP or SSID (Toggles every 5 sec)
-        draw.text((2, LINE_HEIGHT * 2), ICON_WIFI, font=icon_font, fill=255)
-        display_text = stats["ip"] if toggle else stats["ssid"]
-        draw.text((24, LINE_HEIGHT * 2 + 2), display_text, font=font, fill=255)
+            # Line 3: WiFi Icon + IP or SSID (Toggles every 5 sec)
+            draw.text((2, LINE_HEIGHT * 2), ICON_WIFI, font=icon_font, fill=255)
+            display_text = stats["ip"] if toggle else stats["ssid"]
+            draw.text((24, LINE_HEIGHT * 2 + 2), display_text, font=font, fill=255)
 
-        # Line 4: Page number with button indicator
-        page_text = f"{'*' if button_pressed else ' '}{page}"
-        draw.text((112, 2), page_text, font=font, fill=255)
+            # Line 4: Page number with button indicator
+            page_text = f"{'*' if button_pressed else ' '}{page}"
+            draw.text((112, 2), page_text, font=font, fill=255)
 
-        # Send updated image to OLED
-        oled.image(image)
-        oled.show()
+            # Send updated image to OLED
+            oled.image(image)
+            oled.show()
 
             # Track last update time
             last_update_time = now
