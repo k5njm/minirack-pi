@@ -29,11 +29,13 @@ def find_input_device(pattern):
 rotary_device = find_input_device("platform-rotary")
 button_device = find_input_device("platform-button")
 
-PAGE_COUNT = 5
-page = 1
+# Available modes/pages
+MODES = ["Off", "NWS Balloon", "HAM Balloon", "ADS-B", "APRS"]
+current_mode_index = 0  # Start in "Off" mode
 button_pressed = False
-prev_page = None  # Track the last displayed page
+prev_mode = None  # Track the last displayed mode
 display_queue = asyncio.Queue()  # Queue for display updates
+show_hostname = True  # Start by showing hostname
 
 # Define the Reset Pin using gpiozero
 oled_reset = gpiozero.OutputDevice(4, active_high=False)  # GPIO 4 (D4) used for reset
@@ -123,16 +125,19 @@ class DisplayManager:
         """Draw just the page indicator"""
         # Clear just the page indicator area
         draw.rectangle((110, 0, WIDTH, 16), outline=0, fill=0)
-        page_text = f"{'*' if button_pressed else ' '}{page}"
+        page_text = f"{'*' if button_pressed else ' '}{current_mode_index + 1}"
         draw.text((112, 2), page_text, font=font, fill=255)
         
     def draw_system_info(self):
         """Draw the system information"""
         draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)
         
-        # Line 1: CPU Icon & Hostname
+        # Line 1: CPU Icon & Hostname/Mode
         draw.text((2, 0), ICON_CPU, font=icon_font, fill=255)
-        draw.text((24, 2), self.stats["hostname"], font=font, fill=255)
+        if show_hostname and MODES[current_mode_index] == "Off":
+            draw.text((24, 2), self.stats["hostname"], font=font, fill=255)
+        else:
+            draw.text((24, 2), MODES[current_mode_index], font=font, fill=255)
         
         # Line 2: Disk & Temp
         draw.text((2, LINE_HEIGHT), ICON_DISK, font=icon_font, fill=255)
@@ -176,11 +181,13 @@ async def handle_ui_updates():
 
 async def handle_device_events(device):
     """Handle events from a single input device."""
-    global page, button_pressed
+    global current_mode_index, button_pressed, show_hostname
     async for event in device.async_read_loop():
         if device == rotary_device and event.type == evdev.ecodes.EV_REL:
-            page = (page + event.value - 1) % PAGE_COUNT + 1
-            print(f"Rotary event: new page = {page}")
+            current_mode_index = (current_mode_index + event.value) % len(MODES)
+            if current_mode_index != 0:  # If we're not in "Off" mode
+                show_hostname = False  # Stop showing hostname
+            print(f"Rotary event: new mode = {MODES[current_mode_index]}")
             # Immediate UI update for input events
             await display_queue.put("page_change")
         elif device == button_device and event.type == evdev.ecodes.EV_KEY:
