@@ -1,16 +1,52 @@
-#!/usr/bin/env python3
-
 import os
-import time
 import board
-import busio
-import gpiozero
-import subprocess
-import asyncio
-from asyncio import Queue
-from PIL import Image, ImageDraw, ImageFont
-import adafruit_ssd1306
 import evdev
+import socket
+import psutil
+import asyncio
+import logging
+import subprocess
+import adafruit_ssd1306
+from PIL import Image, ImageDraw, ImageFont
+
+# Setup logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+log = logging.getLogger(__name__)
+
+# Networking Icons
+ICON_WIFI = chr(61931)  # FontAwesome Wi-Fi icon
+ICON_ETH = chr(61927)   # FontAwesome Ethernet icon
+ICON_NO_CONN = chr(61928)  # FontAwesome "no connection" icon
+
+def get_network_status():
+    """Returns a tuple: (network_icon, IP address or 'Not Connected')"""
+    interfaces = psutil.net_if_addrs()
+
+    # Prioritize Ethernet over Wi-Fi if both are active
+    for iface in interfaces:
+        if "eth" in iface or "en" in iface:  # Match Ethernet interfaces
+            ip = get_ip_address(iface)
+            if ip:
+                log.debug(f"Ethernet connection detected: {iface} -> {ip}")
+                return ICON_ETH, ip
+
+    for iface in interfaces:
+        if "wlan" in iface or "wifi" in iface:  # Match Wi-Fi interfaces
+            ip = get_ip_address(iface)
+            if ip:
+                log.debug(f"Wi-Fi connection detected: {iface} -> {ip}")
+                return ICON_WIFI, ip
+
+    log.info("No active network connection detected.")
+    return ICON_NO_CONN, "Not Connected"  # No network detected
+
+def get_ip_address(interface):
+    """Returns the IPv4 address of the given network interface, or None if unavailable."""
+    addrs = psutil.net_if_addrs().get(interface, [])
+    for addr in addrs:
+        if addr.family == socket.AF_INET:  # IPv4 only
+            return addr.address
+    return None
 
 def find_input_device(pattern):
     """Find the first input device that matches the pattern in /dev/input/by-path/."""
@@ -20,216 +56,219 @@ def find_input_device(pattern):
             if pattern in device_path:
                 full_path = os.path.join(by_path_dir, device_path)
                 real_path = os.path.realpath(full_path)
+                log.info(f"Found input device: {full_path}")
                 return evdev.InputDevice(real_path)
         raise FileNotFoundError(f"No device found matching pattern: {pattern}")
     except (PermissionError, OSError) as e:
         raise RuntimeError(f"Error accessing device: {e}")
 
-# Input device setup
-rotary_device = find_input_device("platform-rotary")
-button_device = find_input_device("platform-button")
+class OLEDDisplay:
+    def __init__(self, width=128, height=64, i2c_addr=0x3C):
+        self.width = width
+        self.height = height
+        self.i2c_addr = i2c_addr
 
-# Available modes/pages
-MODES = ["Off", "NWS Balloon", "HAM Balloon", "ADS-B", "APRS"]
-current_mode_index = 0  # Start in "Off" mode
-button_pressed = False
-prev_mode = None  # Track the last displayed mode
-display_queue = asyncio.Queue()  # Queue for display updates
-show_hostname = True  # Start by showing hostname
+        self.i2c = board.I2C()
+        self.oled = adafruit_ssd1306.SSD1306_I2C(self.width, self.height, self.i2c)
+        self.oled.fill(0)
+        self.oled.show()
 
-# Define the Reset Pin using gpiozero
-oled_reset = gpiozero.OutputDevice(4, active_high=False)  # GPIO 4 (D4) used for reset
+        self.image = Image.new('1', (self.width, self.height))
+        self.draw = ImageDraw.Draw(self.image)
 
-# Display Parameters
-WIDTH = 128
-HEIGHT = 64
-TOGGLE_INTERVAL = 5  # Toggle between IP and SSID every 5 seconds
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        font_path = os.path.join(os.path.dirname(script_dir), 'fonts', 'PixelOperator.ttf')
+        icon_font_path = os.path.join(os.path.dirname(script_dir), 'fonts', 'lineawesome-webfont.ttf')
 
-# I2C Communication
-i2c = board.I2C()
+        self.font = ImageFont.truetype(font_path, 16)
+        self.icon_font = ImageFont.truetype(icon_font_path, 18)
+        log.info("OLED display initialized.")
 
-# OLED Display Setup
-oled_reset.on()
-time.sleep(0.1)
-oled_reset.off()
-time.sleep(0.1)
-oled_reset.on()
+    def draw_text(self, text, position=(0, 0), fill=255, clear=True, clear_screen=False):
+        # Get bounding box (left, top, right, bottom) relative to (0, 0)
+        left, top, right, bottom = self.font.getbbox(text)
 
-oled = adafruit_ssd1306.SSD1306_I2C(WIDTH, HEIGHT, i2c, addr=0x3C)
-oled.fill(0)
-oled.show()
+        if clear:
+            # Clear the line the text will be drawn on
+            self.draw.rectangle(
+                (position[0] + left, position[1] + top, self.width, position[1] + bottom),
+                outline=0, fill=0
+            )
 
-# Create Image & Drawing Object
-image = Image.new('1', (WIDTH, HEIGHT))
-draw = ImageDraw.Draw(image)
+        if clear_screen:
+            self.draw.rectangle((0, 0, self.width, self.height), outline=0, fill=0)
 
-# Get the absolute directory where the script is located
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+        self.draw.text(position, text, font=self.font, fill=fill)
+        self.oled.image(self.image)
+        self.oled.show()
+        log.debug(f"Displayed text: {text}")        
 
-# Load fonts using absolute paths
-font_path = os.path.join(os.path.dirname(SCRIPT_DIR), 'fonts', 'PixelOperator.ttf')
-icon_font_path = os.path.join(os.path.dirname(SCRIPT_DIR), 'fonts', 'lineawesome-webfont.ttf')
+    def draw_icon(self, text, position=(0, 0), fill=255, clear=True, clear_screen=False):
+        # Get bounding box (left, top, right, bottom) relative to (0, 0)
+        left, top, right, bottom = self.icon_font.getbbox(text)
 
-# Load fonts
-font = ImageFont.truetype(font_path, 16)
-icon_font = ImageFont.truetype(icon_font_path, 18)
+        if clear:
+            self.draw.rectangle(
+                (position[0] + left, position[1] + top, self.width - (position[0] + right), position[1] + bottom),
+                outline=0, fill=0
+            )
 
-# Icon Variables
-ICON_CPU = chr(62171)
-ICON_TEMP = chr(62609)
-ICON_DISK = chr(63426)
-ICON_WIFI = chr(61931)
+        if clear_screen:
+            self.draw.rectangle((0, 0, self.width, self.height), outline=0, fill=0)
 
-# Positioning
-LINE_HEIGHT = 20
-COLUMN_WIDTH = WIDTH // 2
+        self.draw.text(position, text, font=self.icon_font, fill=fill)
+        self.oled.image(self.image)
+        self.oled.show()        
 
-def get_system_stats():
-    def run_command(cmd, default="Unknown"):
-        try:
-            return subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL).decode().strip() or default
-        except subprocess.CalledProcessError:
-            return default
+class ModeStateMachine:
+    MODES = ["Off", "NWS Balloon", "HAM Balloon", "ADS-B", "APRS"]
+    
+    def __init__(self, display):
+        self.selected_mode_index = 0  # Previously "current_mode_index"
+        self.active_mode_index = 0  # Active mode
+        self.display = display
+        self.last_knob_time = asyncio.get_event_loop().time()
+        self.timeout_seconds = 5  # Time before reverting to active mode
+        self.inactivity_task = asyncio.create_task(self.monitor_inactivity())
 
-    return {
-        "hostname": run_command("hostname"),
-        "ip": run_command("hostname -I | cut -d' ' -f1", default="No IP"),
-        "ssid": run_command("/usr/sbin/iwgetid -r", default="Not Connected"),
-        "cpu": run_command("top -bn1 | grep load | awk '{printf \"%.2f\", $(NF-2)}'", default="N/A"),
-        "disk": run_command("df -h | awk '$NF==\"/\"{printf \"%d/%dGB\", $3,$2}'", default="N/A"),
-        "temp": run_command("vcgencmd measure_temp | cut -d '=' -f 2", default="N/A")
-    }
+        self.update_display()
 
-class DisplayManager:
-    def __init__(self):
-        self.stats = get_system_stats()
-        self.toggle = False
-        self.last_stats_update = 0
-        self.stats_update_interval = 1.0  # Update stats every second
-        self.toggle_interval = TOGGLE_INTERVAL
-        
-    async def update_stats(self):
-        """Periodically update system stats"""
+    async def monitor_inactivity(self):
+        """Reverts display to active mode after inactivity."""
         while True:
-            self.stats = get_system_stats()
-            await asyncio.sleep(self.stats_update_interval)
-            
-    async def toggle_wifi_display(self):
-        """Toggle between IP and SSID display"""
-        while True:
-            await asyncio.sleep(self.toggle_interval)
-            self.toggle = not self.toggle
-            await self.update_ui()
-            
-    def draw_page_indicator(self):
-        """Draw just the page indicator"""
-        # Clear just the page indicator area
-        draw.rectangle((110, 0, WIDTH, 16), outline=0, fill=0)
-        page_text = f"{'*' if button_pressed else ' '}{current_mode_index + 1}"
-        draw.text((112, 2), page_text, font=font, fill=255)
-        
-    def draw_system_info(self):
-        """Draw the system information"""
-        draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)
-        
-        # Line 1: CPU Icon & Hostname/Mode
-        draw.text((2, 0), ICON_CPU, font=icon_font, fill=255)
-        if current_mode_index == 0:  # In "Off" mode
-            draw.text((24, 2), self.stats["hostname"], font=font, fill=255)
-        else:
-            draw.text((24, 2), MODES[current_mode_index], font=font, fill=255)
-        
-        # Line 2: Disk & Temp
-        draw.text((2, LINE_HEIGHT), ICON_DISK, font=icon_font, fill=255)
-        draw.text((24, LINE_HEIGHT + 2), self.stats["disk"], font=font, fill=255)
-        draw.text((COLUMN_WIDTH + 2, LINE_HEIGHT), ICON_TEMP, font=icon_font, fill=255)
-        draw.text((COLUMN_WIDTH + 24, LINE_HEIGHT + 2), self.stats["temp"], font=font, fill=255)
-        
-        # Line 3: WiFi
-        draw.text((2, LINE_HEIGHT * 2), ICON_WIFI, font=icon_font, fill=255)
-        display_text = self.stats["ip"] if self.toggle else self.stats["ssid"]
-        draw.text((24, LINE_HEIGHT * 2 + 2), display_text, font=font, fill=255)
-        
-        self.draw_page_indicator()
-        
-    async def update_ui(self):
-        """Update the display"""
-        oled.image(image)
-        oled.show()
+            await asyncio.sleep(1)
+            if asyncio.get_event_loop().time() - self.last_knob_time > self.timeout_seconds:
+                self.display_active_mode()
 
-async def handle_ui_updates():
-    """Manage all UI updates"""
-    display_mgr = DisplayManager()
-    
-    # Start background tasks
-    asyncio.create_task(display_mgr.update_stats())
-    asyncio.create_task(display_mgr.toggle_wifi_display())
-    
-    # Initial draw
-    display_mgr.draw_system_info()
-    await display_mgr.update_ui()
-    
-    while True:
-        update_type = await display_queue.get()
-        if update_type == "page_change" or update_type == "button_event":
-            # Quick update for UI interactions
-            display_mgr.draw_page_indicator()
-        elif update_type == "full_refresh":
-            # Full refresh for system stats
-            display_mgr.draw_system_info()
-        await display_mgr.update_ui()
+    def next_mode(self, direction=1):
+        """Move to the next or previous mode."""
+        self.selected_mode_index = (self.selected_mode_index + direction) % len(self.MODES)
+        self.last_knob_time = asyncio.get_event_loop().time()
+        self.update_display()
 
-async def handle_device_events(device):
-    """Handle events from a single input device."""
-    global current_mode_index, button_pressed, show_hostname
+    def get_selected_mode(self):
+        return self.MODES[self.selected_mode_index]
+
+    def get_active_mode(self):
+        return self.MODES[self.active_mode_index]
+
+    def activate(self):
+        """Activates the selected mode."""
+        self.active_mode_index = self.selected_mode_index
+        log.info(f"Activating {self.get_active_mode()}")
+        self.last_knob_time = asyncio.get_event_loop().time()
+
+        self.display.draw_text(f"Mode: {self.get_active_mode()}", position=(0, 0))
+        activation_text = "Deactivating..." if self.active_mode_index == 0 else "Activating..."
+        self.display.draw_text(activation_text, position=(0, 24))
+
+    def handle_event(self, event):
+        """Handles knob and button events."""
+        self.last_knob_time = asyncio.get_event_loop().time()
+        if event == "knob_forward":
+            self.next_mode(1)
+        elif event == "knob_backward":
+            self.next_mode(-1)
+        elif event == "button_pressed":
+            self.activate()
+
+    def update_display(self):
+        """Updates the display with the selected mode."""
+        mode_text = f"Mode: ({self.get_selected_mode()})"
+        self.display.draw_text(mode_text, position=(0, 0))
+
+    def display_active_mode(self):
+        """Reverts display to the active mode after inactivity."""
+        self.display.draw_text(f"Mode: {self.get_active_mode()}", position=(0, 0))
+
+
+async def input(device):
     async for event in device.async_read_loop():
-        if device == rotary_device and event.type == evdev.ecodes.EV_REL:
-            current_mode_index = (current_mode_index + event.value) % len(MODES)
-            if current_mode_index != 0:  # If we're not in "Off" mode
-                show_hostname = False  # Stop showing hostname
-            print(f"Rotary event: new mode = {MODES[current_mode_index]}")
-            # Immediate UI update for input events
-            await display_queue.put("page_change")
-        elif device == button_device and event.type == evdev.ecodes.EV_KEY:
+        #log.debug(repr(event))
+        if device == rotary_knob and event.type == evdev.ecodes.EV_REL:
+            event_name = "knob_forward" if event.value > 0 else "knob_backward"
+            await event_queue.put(event_name)
+            log.debug(f"Rotary event: {event_name}")
+
+        elif device == button and event.type == evdev.ecodes.EV_KEY:
             if event.code == evdev.ecodes.KEY_A:
-                button_pressed = bool(event.value)
-                print(f"Button event: pressed = {button_pressed}")
-                await display_queue.put("button_event")
+                event_name = "button_pressed" if event.value == 1 else "button_released"
+                await event_queue.put(event_name)
+                log.debug(f"Button event: {event_name}")
 
-async def cleanup():
-    """Clean up resources before shutdown."""
-    # Clear the display
-    draw.rectangle((0, 0, WIDTH, HEIGHT), outline=0, fill=0)
-    oled.image(image)
-    oled.show()
-    
-    # Close input devices
-    rotary_device.close()
-    button_device.close()
-    
-    # Reset OLED
-    oled_reset.off()
+async def process_events():
+    """Continuously processes events from the queue and updates the mode state."""
+    while True:
+        event = await event_queue.get()
+        if event in ["knob_forward", "knob_backward", "button_pressed"]:
+            mode_manager.handle_event(event)
 
-if __name__ == "__main__":
-    # Set up event loop
-    loop = asyncio.get_event_loop()
-    
-    # Create tasks
+        event_queue.task_done()
+
+def get_wifi_ssid():
+    """Returns the connected Wi-Fi SSID, or None if not connected."""
+    try:
+        ssid = subprocess.check_output(["iwgetid", "-r"], text=True).strip()
+        return ssid if ssid else None
+    except subprocess.CalledProcessError:
+        return None
+
+async def update_network_status(display, position=(0, 50)):
+    last_icon, last_ip, last_ssid = None, None, None
+    show_ip = True  # Toggle between IP and SSID
+
+    while True:
+        icon, ip = get_network_status()
+        ssid = get_wifi_ssid() if icon == ICON_WIFI else None  # Only get SSID for Wi-Fi
+
+        if icon != last_icon or ip != last_ip or ssid != last_ssid:
+            display.draw_icon(icon, position=position)
+
+        if icon == ICON_WIFI and ssid:
+            display_text = ip if show_ip else ssid
+            show_ip = not show_ip  # Toggle for next cycle
+        else:
+            display_text = ip  # Ethernet or no network
+
+        display.draw_text(display_text, position=(position[0] + 20, position[1]))
+
+        last_icon, last_ip, last_ssid = icon, ip, ssid
+        await asyncio.sleep(5)  # Toggle every 5 seconds
+
+async def main():
+    global mode_manager
+    display = OLEDDisplay()
+
+    mode_manager = ModeStateMachine(display)  # Initialize state machine
+
     tasks = [
-        asyncio.ensure_future(handle_ui_updates()),
-        asyncio.ensure_future(handle_device_events(rotary_device)),
-        asyncio.ensure_future(handle_device_events(button_device))
+        asyncio.create_task(input(rotary_knob)),
+        asyncio.create_task(input(button)),
+        asyncio.create_task(process_events()),
+        asyncio.create_task(update_network_status(display))
     ]
     
     try:
-        loop.run_forever()
-    except KeyboardInterrupt:
-        print("\nShutting down gracefully...")
-        # Cancel all tasks
+        await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        display.draw_text("Goodbye!", position=(28, 32), clear_screen=True)
+        print("Shutting down gracefully...")
+    finally:
         for task in tasks:
             task.cancel()
-        # Run cleanup
-        loop.run_until_complete(cleanup())
-    finally:
-        loop.stop()
-        loop.close()
+        await asyncio.gather(*tasks, return_exceptions=True)  # Allow tasks to exit
+        print("All tasks cancelled. Exiting.")
+
+# Input device setup
+rotary_knob = find_input_device("platform-rotary")
+button = find_input_device("platform-button")
+
+# Async queue
+event_queue = asyncio.Queue()
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nKeyboardInterrupt received. Exiting cleanly.")
+
