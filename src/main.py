@@ -134,7 +134,7 @@ class DisplayManager:
         
         # Line 1: CPU Icon & Hostname/Mode
         draw.text((2, 0), ICON_CPU, font=icon_font, fill=255)
-        if show_hostname and MODES[current_mode_index] == "Off":
+        if current_mode_index == 0:  # In "Off" mode
             draw.text((24, 2), self.stats["hostname"], font=font, fill=255)
         else:
             draw.text((24, 2), MODES[current_mode_index], font=font, fill=255)
